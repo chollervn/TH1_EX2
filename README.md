@@ -1,5 +1,9 @@
 # Thực hành Python AMQP
 
+**Sinh viên:** Phạm Minh Quân
+
+**Mã sinh viên:** B23DCCN683
+
 Ba bài thực hành dùng Python 3.9+ và Pika, kết nối RabbitMQ qua AMQP 0-9-1.
 
 | Thư mục | Nội dung |
@@ -47,16 +51,16 @@ Terminal 1:
 python bai1_queue/consumer_bai1.py
 ```
 
-Terminal 2 (thay thông tin mẫu bằng thông tin của bạn):
+Terminal 2:
 
 ```powershell
-python bai1_queue/producer_bai1.py --name "Nguyen Van A" --student-id "B21xxxx"
+python bai1_queue/producer_bai1.py
 ```
 
 Producer gửi một lời chào vào `iot_lab_queue`. Có thể chạy lại để gửi thêm. Kết quả mong đợi ở consumer:
 
 ```text
-Da nhan message: Xin chao tu ung dung Python AMQP - B21xxxx - Nguyen Van A
+Da nhan message: Xin chao tu ung dung Python AMQP - B23DCCN683 - Phạm Minh Quân
 Thoi gian nhan: 14:05:21
 ```
 
