@@ -1,198 +1,147 @@
-# Bài 2: Mô phỏng cảm biến nhiệt độ và độ ẩm bằng MQTT
+# Thực hành Python AMQP
 
-Hai chương trình Python mô phỏng thiết bị IoT gửi dữ liệu mỗi 3 giây và giám sát dữ liệu qua MQTT.
+Ba bài thực hành dùng Python 3.9+ và Pika, kết nối RabbitMQ qua AMQP 0-9-1.
 
-```text
-publisher.py → MQTT Broker → subscriber.py
-                Topic: iot/lab/sensor01/data
-```
-
-## 1. Nội dung
-
-| File | Chức năng |
+| Thư mục | Nội dung |
 | --- | --- |
-| `publisher.py` | Sinh nhiệt độ 20–40°C, độ ẩm 30–80%, làm tròn 1 chữ số thập phân và gửi JSON mỗi 3 giây |
-| `subscriber.py` | Nhận JSON, in từng dòng và kiểm tra ngưỡng cảnh báo |
-| `requirements.txt` | Khai báo thư viện `paho-mqtt` |
-| `mosquitto.conf` | Cấu hình broker Mosquitto để chạy trên máy cá nhân |
+| `bai1_queue` | Gửi lời chào và nhận message kèm thời điểm nhận |
+| `bai2_sensor` | Gửi JSON cảm biến mỗi 3 giây và giám sát ngưỡng |
+| `bai3_alert` | Phân phối warning/critical bằng direct exchange |
 
-Payload gửi đúng ba trường:
+Mỗi thư mục có `amqp.py` hỗ trợ kết nối, xác nhận message và đóng kết nối khi Ctrl+C. Có thể chạy các lệnh dưới đây từ thư mục gốc repo.
 
-```json
-{
-  "device_id": "sensor01",
-  "temperature": 28.5,
-  "humidity": 65.2
-}
-```
+## Chuẩn bị
 
-## 2. Chuẩn bị môi trường
-
-- Python **3.7 trở lên** (Python 3.x có hỗ trợ `paho-mqtt` 2.1.0).
-- VS Code hoặc một IDE khác; có thể chạy trực tiếp bằng terminal.
-- Broker MQTT, chọn một trong hai cách ở mục 3.
-
-Mở terminal tại thư mục chứa `publisher.py` rồi cài thư viện:
-
-```bash
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
 ```
 
-Nếu máy dùng lệnh `python3` thay cho `python`, thay tương ứng trong các lệnh dưới đây.
-
-## 3. Cấu hình MQTT Broker
-
-### Cách A: Chạy Mosquitto trên máy cá nhân
-
-Cách này phù hợp để nộp bài vì topic không bị trùng với người khác trên broker công cộng.
-
-1. Tải và cài [Eclipse Mosquitto](https://mosquitto.org/download/) theo hệ điều hành. Trên Windows, chọn bộ cài Windows x64 nếu máy dùng Windows 64-bit.
-2. File `mosquitto.conf` trong bài đã cấu hình:
-
-   ```conf
-   listener 1883 127.0.0.1
-   allow_anonymous true
-   persistence false
-   ```
-
-   Broker chỉ nhận kết nối từ máy hiện tại ở cổng 1883, không yêu cầu tài khoản. Đây là cấu hình thực hành local.
-
-3. Mở terminal tại thư mục bài và chạy broker, giữ terminal này mở:
-
-   ```bash
-   mosquitto -c mosquitto.conf -v
-   ```
-
-   Nếu Windows chưa có Mosquitto trong PATH, dùng PowerShell:
-
-   ```powershell
-   & "C:\Program Files\mosquitto\mosquitto.exe" -c .\mosquitto.conf -v
-   ```
-
-4. Hai chương trình mặc định dùng `localhost:1883`, nên không cần sửa code.
-
-Nếu cổng 1883 đã bị một dịch vụ Mosquitto khác sử dụng, dùng broker đang chạy hoặc đổi dòng listener trong file thành `listener 1884 127.0.0.1`, sau đó đặt `MQTT_PORT=1884` cho cả hai chương trình.
-
-### Cách B: Dùng broker công cộng để chạy nhanh
-
-Có thể dùng [test.mosquitto.org](https://test.mosquitto.org/) với cổng **1883**, không yêu cầu username/password. Cách này cần Internet và không cần cài Mosquitto trên máy.
-
-Trong **cả hai terminal**, trước khi chạy chương trình, đặt:
-
-Windows PowerShell:
+Broker mặc định: RabbitMQ tại `localhost:5672`, virtual host `/`, tài khoản `guest/guest`. Có thể dùng RabbitMQ đã cài sẵn. Hoặc mở Docker Desktop, chờ Docker chạy rồi tạo broker thực hành:
 
 ```powershell
-$env:MQTT_BROKER = "test.mosquitto.org"
-$env:MQTT_PORT = "1883"
+docker run -d --name th1-ex2-rabbitmq -p 127.0.0.1:5672:5672 -p 127.0.0.1:15672:15672 rabbitmq:4-management
+docker logs th1-ex2-rabbitmq
 ```
 
-Linux/macOS:
+Chờ log báo broker khởi động xong. Trang quản trị: http://localhost:15672 (`guest/guest`). Khi container đã tồn tại, dùng `docker start th1-ex2-rabbitmq`.
 
-```bash
-export MQTT_BROKER=test.mosquitto.org
-export MQTT_PORT=1883
-```
-
-Broker công cộng có thể gián đoạn và người khác có thể gửi/đọc cùng topic. Chỉ dùng dữ liệu mô phỏng; để kiểm tra riêng bài của mình, dùng cách A.
-
-### Các biến cấu hình
-
-Hai chương trình cùng đọc các biến môi trường sau:
-
-| Biến | Mặc định | Ý nghĩa |
-| --- | --- | --- |
-| `MQTT_BROKER` | `localhost` | Địa chỉ broker, chỉ nhập hostname hoặc IP, không có `mqtt://` |
-| `MQTT_PORT` | `1883` | Cổng MQTT TCP |
-| `MQTT_USERNAME` | Không đặt | Tên đăng nhập nếu broker yêu cầu |
-| `MQTT_PASSWORD` | Không đặt | Mật khẩu nếu broker yêu cầu |
-
-Ví dụ khi giáo viên cung cấp broker có tài khoản, đặt trong cả hai terminal PowerShell:
+Nếu dùng broker của lớp, đặt các biến trong **từng terminal** trước khi chạy:
 
 ```powershell
-$env:MQTT_BROKER = "dia-chi-broker-cua-ban"
-$env:MQTT_PORT = "1883"
-$env:MQTT_USERNAME = "ten-dang-nhap"
-$env:MQTT_PASSWORD = "mat-khau"
+$env:AMQP_HOST = "dia-chi-broker"
+$env:AMQP_PORT = "5672"
+$env:AMQP_USER = "tai-khoan"
+$env:AMQP_PASSWORD = "mat-khau"
+$env:AMQP_VHOST = "/"
 ```
 
-Thay giá trị mẫu bằng thông tin thật. Chương trình sử dụng MQTT TCP, không bật TLS; cổng 8883 thường cần cấu hình TLS riêng. Để quay về broker local trong PowerShell:
+Không đặt các biến trên nếu dùng cấu hình mặc định. Tài khoản guest chỉ dùng cho broker local. Chương trình dùng AMQP TCP; broker bắt buộc TLS cần bổ sung cấu hình TLS trước khi sử dụng.
+
+## Bài 1 — Queue
+
+Terminal 1:
 
 ```powershell
-$env:MQTT_BROKER = "localhost"
-$env:MQTT_PORT = "1883"
-Remove-Item Env:MQTT_USERNAME, Env:MQTT_PASSWORD -ErrorAction SilentlyContinue
+python bai1_queue/consumer_bai1.py
 ```
 
-## 4. Chạy chương trình
+Terminal 2 (thay thông tin mẫu bằng thông tin của bạn):
 
-Nếu dùng cách A, chạy broker trước. Mở hai terminal khác tại thư mục bài, cài thư viện và đặt cấu hình broker theo mục 3 nếu cần.
-
-**Terminal 1 — chạy subscriber trước:**
-
-```bash
-python subscriber.py
+```powershell
+python bai1_queue/producer_bai1.py --name "Nguyen Van A" --student-id "B21xxxx"
 ```
 
-Đợi xuất hiện `Da subscribe: iot/lab/sensor01/data. Dang cho du lieu...`.
-
-**Terminal 2 — chạy publisher:**
-
-```bash
-python publisher.py
-```
-
-Publisher gửi ngay sau khi kết nối, sau đó gửi tiếp mỗi 3 giây. Subscriber hiển thị ví dụ:
+Producer gửi một lời chào vào `iot_lab_queue`. Có thể chạy lại để gửi thêm. Kết quả mong đợi ở consumer:
 
 ```text
-------------------------------------
+Da nhan message: Xin chao tu ung dung Python AMQP - B21xxxx - Nguyen Van A
+Thoi gian nhan: 14:05:21
+```
+
+## Bài 2 — Sensor
+
+Terminal 1:
+
+```powershell
+python bai2_sensor/monitor_consumer_bai2.py
+```
+
+Terminal 2:
+
+```powershell
+python bai2_sensor/sensor_producer_bai2.py
+```
+
+Producer sinh ngẫu nhiên nhiệt độ 20–40°C và độ ẩm 30–80%, làm tròn một chữ số thập phân; gửi ngay rồi lặp mỗi 3 giây vào `sensor_data_queue`. Payload:
+
+```json
+{"device_id": "sensor01", "temperature": 36.4, "humidity": 38.9}
+```
+
+Kết quả mong đợi cho payload trên:
+
+```text
 Device: sensor01
-Temperature: 36.1 C
-Humidity: 38.7 %
+Temperature: 36.4
+Humidity: 38.9
 CANH BAO: Nhiet do cao
 CANH BAO: Do am thap
-------------------------------------
 ```
 
-Do dữ liệu ngẫu nhiên, kết quả mỗi lần sẽ khác nhau. Nhấn `Ctrl+C` trong từng terminal để dừng chương trình.
+Hai ngưỡng kiểm tra độc lập: nhiệt độ **>35**, độ ẩm **<40**. Đúng 35 và 40 không cảnh báo. Giá trị ngẫu nhiên nên không phải bản tin nào cũng có cảnh báo. Payload sai JSON, thiếu trường hoặc sai kiểu bị loại bỏ có thông báo; consumer tiếp tục nhận.
 
-## 5. Nguyên tắc cảnh báo và kiểm tra
+## Bài 3 — Alert
 
-- Nhiệt độ **> 35°C**: `CANH BAO: Nhiet do cao`.
-- Độ ẩm **< 40%**: `CANH BAO: Do am thap`.
-- Hai điều kiện được kiểm tra bằng hai `if` độc lập, nên có thể in cả hai cảnh báo.
-- Đúng 35°C hoặc 40% thì không phát cảnh báo tương ứng.
-- Payload lỗi JSON, thiếu trường hoặc giá trị sai kiểu sẽ bị bỏ qua và có thông báo, subscriber tiếp tục nhận bản tin.
-- Publisher dùng `json.dumps()`, subscriber dùng `json.loads()` và callback API phiên bản 2 của Paho.
-- Bản tin dùng QoS 0 và `retain=False`: phù hợp dữ liệu cảm biến định kỳ; bản tin không được lưu để gửi lại cho subscriber kết nối muộn.
-- Hai chương trình tự thử kết nối lại khi mất kết nối sau lần kết nối ban đầu. Nếu broker chưa chạy ở lần đầu, chương trình báo lỗi và cần chạy lại sau khi bật broker.
+Chạy hai consumer trước và chờ cả hai in `Dang cho tai ...` để các binding được tạo.
 
-| Nhiệt độ (°C) | Độ ẩm (%) | Kết quả mong đợi |
-| --- | --- | --- |
-| 28.5 | 65.2 | Không cảnh báo |
-| 36.1 | 65.2 | Nhiệt độ cao |
-| 28.5 | 38.7 | Độ ẩm thấp |
-| 36.1 | 38.7 | Cả hai cảnh báo |
-| 35.0 | 40.0 | Không cảnh báo |
+Terminal 1:
 
-Để kiểm tra chắc chắn cảnh báo, khi subscriber đang chạy, mở một terminal thứ ba với cùng cấu hình broker. Chạy `python` để mở Python tương tác, rồi dán lần lượt:
-
-```python
-import json, os
-from paho.mqtt.publish import single
-data = {"device_id": "sensor01", "temperature": 36.1, "humidity": 38.7}
-auth = {"username": os.environ["MQTT_USERNAME"], "password": os.getenv("MQTT_PASSWORD")} if os.getenv("MQTT_USERNAME") else None
-single("iot/lab/sensor01/data", payload=json.dumps(data), hostname=os.getenv("MQTT_BROKER", "localhost"), port=int(os.getenv("MQTT_PORT", "1883")), auth=auth)
-exit()
+```powershell
+python bai3_alert/warning_consumer_bai3.py
 ```
 
-Dừng publisher bằng `Ctrl+C` trước khi thử dữ liệu cố định để dễ quan sát. Thay nhiệt độ và độ ẩm trong `data` để thử các dòng trong bảng.
+Terminal 2:
 
-## 6. Lỗi thường gặp
+```powershell
+python bai3_alert/critical_consumer_bai3.py
+```
 
-| Lỗi/hiện tượng | Cách xử lý |
+Terminal 3:
+
+```powershell
+python bai3_alert/alert_producer_bai3.py
+```
+
+Producer gửi ba mức `info`, `warning`, `critical` vào direct exchange `iot_alert_exchange` với routing key tương ứng.
+
+| Routing key | Kết quả mong đợi |
 | --- | --- |
-| `No module named 'paho'` | Chạy `python -m pip install -r requirements.txt` bằng đúng Python đang dùng |
-| Connection refused / WinError 10061 | Bật broker, kiểm tra host và port |
-| Không nhận dữ liệu | Kiểm tra hai terminal cùng broker, cùng port; đợi subscriber xác nhận subscribe rồi chạy publisher |
-| Broker từ chối kết nối | Kiểm tra username/password và quyền truy cập broker |
-| `Address already in use` khi chạy Mosquitto | Cổng đang được dùng; dùng broker có sẵn hoặc đổi cổng ở cả broker và hai chương trình |
+| `info` | Không consumer nào trong bài nhận |
+| `warning` | Chỉ `warning_queue` nhận |
+| `critical` | Chỉ `critical_queue` nhận |
+
+```text
+[warning_queue] Da nhan: Nhiet do phong may vuot nguong warning
+[critical_queue] Da nhan: Cam bien kho lanh mat ket noi critical
+```
+
+`info` bị broker bỏ qua vì không có binding phù hợp. Nếu chạy producer trước khi có binding ở lần đầu, warning/critical cũng chưa có nơi nhận.
+
+## Dừng và xử lý lỗi
+
+Nhấn `Ctrl+C` trong từng terminal. Consumer chạy liên tục, xác nhận sau khi xử lý; queue và exchange dùng `durable=True`, message dùng persistent delivery. Bản tin chờ có thể còn trong queue giữa các lần chạy. Có thể xóa bản tin thử bằng nút Purge trên trang quản trị RabbitMQ đúng queue cần dọn.
+
+Nếu lỗi kết nối, kiểm tra RabbitMQ đã chạy, cổng 5672 và các biến môi trường. Sau khi sửa, chạy lại chương trình; không tự phục hồi kết nối trong lúc đang chạy. Nếu báo `PRECONDITION_FAILED`, queue/exchange cùng tên có thể đã được tạo với thuộc tính khác; dùng broker/vhost thực hành riêng hoặc xóa đúng đối tượng thực hành đó rồi chạy lại.
+
+## Kiểm tra
+
+```powershell
+python -m unittest discover -s bai2_sensor -p "test_*.py" -v
+python -m compileall -q bai1_queue bai2_sensor bai3_alert
+```
+
+Unit test kiểm tra dữ liệu cảm biến, ngưỡng biên, hai cảnh báo đồng thời và loại bỏ payload lỗi. Để kiểm tra truyền/nhận thật và routing, chạy ba bài theo các bước trên với RabbitMQ đang hoạt động. Các đầu ra trong README là ví dụ mong đợi.
+
+Tham khảo: [RabbitMQ Python routing](https://www.rabbitmq.com/tutorials/tutorial-four-python).
